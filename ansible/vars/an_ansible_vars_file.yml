@@ -1,0 +1,17 @@
+## Software Versions ##
+
+an_containerd_ver     : '1.7.18'
+an_runc_ver           : '1.2.0-rc.1'
+an_cni_ver            : '1.5.0'
+an_k8s_ver            : '1.30'
+an_cfssl_ver          : '1.6.5'
+an_etcd_ver           : '3.5.14'
+an_calico_ver         : '3.28.0'
+
+## Credentials Informations ##
+an_keepalived_pass    : '42'
+an_keepalived_id      : '69'
+an_pod_subnet         : '172.16.0.0/16'
+
+## Hardware (might be a tf var) ##
+an_interface2Master   : 'eth0'

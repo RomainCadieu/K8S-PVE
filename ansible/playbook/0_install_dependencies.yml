@@ -1,0 +1,213 @@
+- name: Kubernetes Dependencies
+  hosts: all
+  vars_files:
+    - /etc/ansible/vars/an_ansible_vars_file.yml
+  become: yes
+  tasks:
+    - name: Check mandatory variables imported from dependancy var
+      assert:
+        that:
+          - an_containerd_ver
+          - an_runc_ver
+          - an_cni_ver
+          - an_k8s_ver 
+        fail_msg: "an_* variable usually defined in '/etc/ansible/vars/an_ansible_vars_file.yml' is missing"
+
+    - name: Updates
+      apt:
+        update_cache: yes
+
+    - name: Reboot
+      reboot:
+
+    - name: Disable SWAP
+      shell: |
+        swapoff -a
+
+    - name: Disable SWAP in fstab
+      replace:
+        path: /etc/fstab
+        regexp: '^([^#].*?\sswap\s+sw\s+.*)$'
+        replace: '# \1'
+
+    - name: Create an empty file for K8S sysctl parameters
+      copy:
+        content: ""
+        dest: /etc/sysctl.d/kubernetes-cri.conf
+        force: no
+
+    - name: Configure sysctl parameters for K8S
+      lineinfile:
+        path: /etc/sysctl.d/kubernetes-cri.conf
+        line: "{{ item }}"
+      with_items:
+        - "net.bridge.bridge-nf-call-iptables  = 1"
+        - "net.ipv4.ip_forward                 = 1"
+        - "net.bridge.bridge-nf-call-ip6tables = 1"
+
+    - name: Apply sysctl parameters
+      command: sysctl --system
+
+    - name: Download Containerd
+      get_url:
+        url: https://github.com/containerd/containerd/releases/download/v{{ an_containerd_ver }}/containerd-{{ an_containerd_ver }}-linux-amd64.tar.gz
+        dest: '~/containerd.tar.gz'
+        mode: "0644"
+
+    - name: Extract containerd.tar.gz into /usr/local/containerd
+      unarchive:
+        src: '~/containerd.tar.gz'
+        dest: /usr/local/
+        remote_src: yes
+
+    - name: Create Systemd directories
+      file:
+        path: /usr/local/lib/systemd/system
+        state: directory
+        mode: '0755'
+        recurse: yes
+
+    - name: Create an empty file for the containerd module
+      copy:
+        content: ""
+        dest: /usr/local/lib/systemd/system/containerd.service
+        force: no
+
+    - name: Configure modules for containerd
+      blockinfile:
+        path: /usr/local/lib/systemd/system/containerd.service
+        block: |
+          [Unit]
+          Description=containerd container runtime
+          Documentation=https://containerd.io
+          After=network.target local-fs.target
+
+          [Service]
+          ExecStartPre=-/sbin/modprobe overlay
+          ExecStart=/usr/local/bin/containerd
+
+          Type=notify
+          Delegate=yes
+          KillMode=process
+          Restart=always
+          RestartSec=5
+
+          # Having non-zero Limit*s causes performance problems due to accounting overhead
+          # in the kernel. We recommend using cgroups to do container-local accounting.
+          LimitNPROC=infinity
+          LimitCORE=infinity
+
+          # Comment TasksMax if your systemd version does not supports it.
+          # Only systemd 226 and above support this version.
+          TasksMax=infinity
+          OOMScoreAdjust=-999
+
+          [Install]
+          WantedBy=multi-user.target
+
+    - name: Reload daemon
+      shell: sudo systemctl daemon-reload
+
+    - name: Enable the containerd service and start service
+      shell: sudo systemctl enable --now containerd
+
+    - name: Download Runc
+      get_url:
+        url: https://github.com/opencontainers/runc/releases/download/v{{ an_runc_ver }}/runc.amd64
+        dest: '~/runc.amd64'
+        mode: "0644" 
+
+    - name: Install Runc
+      shell: cd ~ && sudo install -m 755 runc.amd64 /usr/local/sbin/runc
+
+    - name: Download CNI
+      get_url:
+        url: https://github.com/containernetworking/plugins/releases/download/v{{ an_cni_ver }}/cni-plugins-linux-amd64-v{{ an_cni_ver }}.tgz
+        dest: '~/cni-plugins.tgz'
+        mode: "0644" 
+
+    - name: Create CNI directories
+      file:
+        path: /opt/cni/bin
+        state: directory
+        mode: '0755'
+        recurse: yes
+
+    - name: Extract CNI into /opt/cni/bin
+      unarchive:
+        src: '~/cni-plugins.tgz'
+        dest: /opt/cni/bin
+        remote_src: yes
+
+    - name: Create Containerd directory
+      file:
+        path: /etc/containerd
+        state: directory
+        mode: '0755'
+        recurse: yes
+
+    - name: Add containerd configuration
+      shell: sudo su -c 'containerd config default > /etc/containerd/config.toml'
+
+
+    - name: Configuring Systemd cgroup driver for containerd
+      lineinfile:
+        path: /etc/containerd/config.toml
+        regexp: "            SystemdCgroup = false"
+        line: "            SystemdCgroup = true"
+
+    - name: Reload daemon
+      shell: sudo systemctl daemon-reload
+
+    - name: Enable the containerd service and start service
+      shell: sudo systemctl restart containerd
+
+    - name: Install APT Transport HTTPS
+      apt:
+        pkg:
+        - apt-transport-https
+        - ca-certificates 
+        - curl 
+        - gpg
+
+    - name: Add Kubernetes apt-key
+      get_url:
+        url: https://pkgs.k8s.io/core:/stable:/v{{ an_k8s_ver }}/deb/Release.key
+        dest: /etc/apt/keyrings/kubernetes-apt-keyring.asc
+        mode: "0644"
+        force: true
+
+    - name: Add Kubernetes APT repository
+      apt_repository:
+        repo: "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.asc] https://pkgs.k8s.io/core:/stable:/v{{ an_k8s_ver }}/deb/ /"
+        state: present
+        update_cache: yes
+
+    - name: Install Kubelet
+      apt:
+        name: kubelet={{ an_k8s_ver }}.*
+        state: present
+        update_cache: true
+
+    - name: Install Kubeadm
+      apt:
+        name: kubeadm={{ an_k8s_ver }}.*
+        state: present
+
+    - name: Hold packages
+      shell: sudo apt-mark hold kubelet kubeadm kubectl
+
+    - name: Enable the kubelet service and start service
+      shell: sudo systemctl enable --now kubelet
+
+- hosts: master
+  become: yes
+  vars_files:
+    - /etc/ansible/vars/an_ansible_vars_file.yml
+  tasks:
+    - name: Install Kubectl
+      apt:
+        name: kubectl={{ an_k8s_ver }}.*
+        state: present
+        force: yes
+

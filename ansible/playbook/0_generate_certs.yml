@@ -1,0 +1,161 @@
+- hosts: 127.0.0.1
+  connection: local
+  vars_files:
+    - /etc/ansible/vars/tf_ansible_vars_file.yml
+    - /etc/ansible/vars/an_ansible_vars_file.yml
+  become: yes
+  tasks:
+    - name: Check mandatory variables imported from Terraform
+      assert:
+        that:
+          - tf_ansible_user is defined
+          - tf_ETCD is defined
+          - tf_MASTER is defined
+        fail_msg: "tf_* variable usually defined in '/etc/ansible/vars/tf_ansible_vars_file.yml' is missing"
+    - name: Check mandatory variables imported from dependancy var
+      assert:
+        that:
+          - an_cfssl_ver
+        fail_msg: "an_* variable usually defined in '/etc/ansible/vars/an_ansible_vars_file.yml' is missing"
+
+    - name: Download CFSSL json utilities
+      get_url:
+        url: https://github.com/cloudflare/cfssl/releases/download/v{{ an_cfssl_ver }}/cfssljson_{{ an_cfssl_ver }}_linux_amd64
+        dest: '/home/{{ tf_ansible_user }}/cfssljson'
+        mode: "0644"
+        force: true
+    - name: Download CFSSL utilities
+      get_url:
+        url: https://github.com/cloudflare/cfssl/releases/download/v{{ an_cfssl_ver }}/cfssl_{{ an_cfssl_ver }}_linux_amd64
+        dest: '/home/{{ tf_ansible_user }}/cfssl'
+        mode: "0644"
+        force: true
+    - name: Changing perm of "/home/{{ tf_ansible_user }}/cfssl", adding "+x"
+      file:
+        path: '/home/{{ tf_ansible_user }}/cfssl'
+        mode: +x
+    - name: Changing perm of "/home/{{ tf_ansible_user }}/cfssljson", adding "+x"
+      file:
+        path: '/home/{{ tf_ansible_user }}/cfssljson'
+        mode: +x
+    - name: Move CFSSL into bash
+      shell: sudo mv /home/{{ tf_ansible_user }}/cfssl /home/{{ tf_ansible_user }}/cfssljson /usr/local/bin/
+
+    - name: Create an empty file for the CA config file
+      copy:
+        content: ""
+        dest: '/home/{{ tf_ansible_user }}/ca-config.json'
+        force: yes
+    - name: Edit the CA config file
+      blockinfile:
+        path: '/home/{{ tf_ansible_user }}/ca-config.json'
+        marker: ""
+        block: |
+          {
+              "signing": {
+                  "default": {
+                      "expiry": "8760h"
+                  },
+                  "profiles": {
+                      "etcd": {
+                          "expiry": "8760h",
+                          "usages": ["signing","key encipherment","server auth","client auth"]
+                      }
+                  }
+              }
+          }
+    - name: Create an empty file for the Certificate Signing Request
+      copy:
+        content: ""
+        dest: '/home/{{ tf_ansible_user }}/ca-csr.json'
+        force: yes
+    - name: Edit the Certificate Signing Request
+      blockinfile:
+        path: '/home/{{ tf_ansible_user }}/ca-csr.json'
+        marker: ""
+        block: |
+          {
+            "CN": "etcd cluster",
+            "key": {
+              "algo": "rsa",
+              "size": 2048
+            },
+            "names": [
+              {
+                "C": "GB",
+                "L": "England",
+                "O": "Kubernetes",
+                "OU": "ETCD-CA",
+                "ST": "Cambridge"
+              }
+            ]
+          }
+    - name: Generate self certs
+      shell: cd /home/{{ tf_ansible_user }} && cfssl gencert -initca /home/{{ tf_ansible_user }}/ca-csr.json | cfssljson -bare ca
+
+    - name: Search every hosts of the etcd cluster and prepare values to the etcd CSR
+      set_fact:
+        etcd_csr_val: "{{ etcd_csr_val | d('') + '\"' ~ tf_ETCD[ansible_loop.index].ip ~ '\",\n    '}}"
+      loop: "{{ range(0, tf_ETCD | length, 1) | list }}"
+      loop_control:
+        extended: true
+
+    - name: Create an empty file for the ETCD Certificate Signing Request
+      copy:
+        content: ""
+        dest: '/home/{{ tf_ansible_user }}/etcd-csr.json'
+        force: yes
+
+    - name: Edit the Certificate Signing Request for etcd
+      lineinfile:
+        dest: '/home/{{ tf_ansible_user }}/etcd-csr.json'
+        line: '{{ item }}'
+      with_items:
+      - '{'
+      - '  "CN": "etcd",'
+      - '  "hosts": ['
+      - '    "localhost",'
+      - '    "127.0.0.1",'
+      - '    {{ etcd_csr_val[:-6] }}'
+      - '  ],'
+      - '  "key": {'
+      - '    "algo": "rsa",'
+      - '    "size": 2048'
+      - '  },'
+      - '  "names": ['
+      - '    {'
+      - '      "C": "GB",'
+      - '      "L": "England",'
+      - '      "O": "Kubernetes",'
+      - '      "OU": "etcd",'
+      - '      "ST": "Cambridge"'
+      - '    }'
+      - '  ]'
+      - '}'
+
+    - name: Generate etcd certs
+      shell: cd /home/{{ tf_ansible_user }} && cfssl gencert -ca=/home/{{ tf_ansible_user }}/ca.pem -ca-key=/home/{{ tf_ansible_user }}/ca-key.pem -config=/home/{{ tf_ansible_user }}/ca-config.json -profile=etcd /home/{{ tf_ansible_user }}/etcd-csr.json | cfssljson -bare etcd
+
+    - name: Search every hosts of the etcd cluster and prepare values to send certs
+      set_fact:
+        etcd_cert: "{{ etcd_cert | d('') + '' ~ tf_ETCD[ansible_loop.index].ip ~ ' '}}"
+        etcd_user: "{{ etcd_user | d('') + '' ~ tf_ETCD[ansible_loop.index].user ~ ' '}}"
+        etcd_count: "{{ ansible_loop.index }}"
+      loop: "{{ range(0, tf_ETCD | length, 1) | list }}"
+      loop_control:
+        extended: true
+
+    - name: Transmit ca-cert to every etcd and the first master node
+      ansible.builtin.shell: |
+        declare -a NODES=({{ etcd_cert[:-1] }})
+        declare -a USERS=({{ etcd_user[:-1] }})
+        declare -a LENGHT="{{ etcd_count }}"
+        declare -a l=${LENGHT[0]}
+
+        for (( i=0; i<l; i++)); do
+          scp -i /home/{{ tf_ansible_user }}/.ssh/id_rsa -o StrictHostKeyChecking=no /home/{{ tf_ansible_user }}/ca.pem /home/{{ tf_ansible_user }}/etcd.pem /home/{{ tf_ansible_user }}/etcd-key.pem ${USERS[$i]}@${NODES[$i]}:
+        done
+
+        scp -i /home/{{ tf_ansible_user }}/.ssh/id_rsa -o StrictHostKeyChecking=no /home/{{ tf_ansible_user }}/ca.pem /home/{{ tf_ansible_user }}/etcd.pem /home/{{ tf_ansible_user }}/etcd-key.pem {{ tf_MASTER[1].user }}@{{ tf_MASTER[1].ip }}:
+      args:
+        executable: /bin/bash

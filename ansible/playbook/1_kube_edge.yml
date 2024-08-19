@@ -1,0 +1,180 @@
+- hosts: edge
+  vars_files:
+    - /etc/ansible/vars/tf_ansible_vars_file.yml
+    - /etc/ansible/vars/an_ansible_vars_file.yml
+  become: yes
+  tasks:
+    - name: Check mandatory variables imported from Terraform
+      assert:
+        that:
+          - tf_MASTER is defined
+          - tf_VIP_IP is defined
+        fail_msg: "tf_* variable usually defined in '/etc/ansible/vars/tf_ansible_vars_file.yml' is missing"
+    - name: Check mandatory variables imported from dependancy var
+      assert:
+        that:
+          - an_keepalived_pass
+          - an_keepalived_id
+          - an_interface2Master
+        fail_msg: "an_* variable usually defined in '/etc/ansible/vars/an_ansible_vars_file.yml' is missing"
+
+    - name: Create an empty file for edge sysctl parameters
+      copy:
+        content: ""
+        dest: /etc/sysctl.d/edge.conf
+        force: no
+
+    - name: Configure sysctl parameters for K8S
+      lineinfile:
+        path: /etc/sysctl.d/edge.conf
+        line: "{{ item }}"
+      with_items:
+        - "net.ipv4.ip_nonlocal_bind = 1"
+
+    - name: Apply sysctl parameters
+      command: sysctl --system
+
+
+    - name: Install haproxy + keepalived
+      apt:
+        pkg:
+        - keepalived
+        - haproxy 
+    - name: Create keepalived directory
+      file:
+        path: /etc/keepalived
+        state: directory
+        mode: '0644'
+        recurse: yes
+
+    - name: Create an empty file for keepalived parameters
+      copy:
+        content: ""
+        dest: /etc/keepalived/keepalived.conf
+        force: no
+    - name: Configure vrrp for keepalived
+      blockinfile:
+        path: '/etc/keepalived/keepalived.conf'
+        block: |
+          global_defs {
+              router_id LVS_DEVEL
+          }
+          vrrp_script check_apiserver {
+          script "/etc/keepalived/check_apiserver.sh"
+          interval 3
+          weight -2
+          fall 10
+          rise 2
+          }
+
+          vrrp_instance VI_1 {
+              state MASTER
+              interface {{ an_interface2Master }}
+              virtual_router_id {{ an_keepalived_id }}
+              priority 101
+              authentication {
+                  auth_type PASS
+                  auth_pass {{ an_keepalived_pass }}
+              }
+              virtual_ipaddress {
+                  {{ tf_VIP_IP }}
+              }
+              track_script {
+                  check_apiserver
+              }
+          }
+
+    - name: Create an empty file for keepalived check
+      copy:
+        content: ""
+        dest: /etc/keepalived/check_apiserver.sh
+        force: no
+    - name: Configure check for keepalived
+      blockinfile:
+        path: '/etc/keepalived/check_apiserver.sh'
+        block: |
+          #!/bin/sh
+
+          errorExit() {
+              echo "*** $*" 1>&2
+              exit 1
+          }
+          curl -sfk --max-time 2 https://localhost:6443/healthz -o /dev/null || errorExit "Error GET https://localhost:6443/healthz"
+
+    - name: Enable the keepalived service and start service
+      shell: sudo systemctl enable --now keepalived
+    - name: Enable the haproxy service and start service
+      shell: sudo systemctl enable --now haproxy
+
+    - name: Create an empty file for haproxy config
+      copy:
+        content: ""
+        dest: /etc/haproxy/haproxy.cfg
+        force: no
+
+    - name: Search every hosts of the etcd cluster and prepare values to backend string
+      set_fact:
+        backend_master: "{{ backend_master | d('') + 'server ' ~ tf_MASTER[ansible_loop.index].hostname ~ ' ' ~ tf_MASTER[ansible_loop.index].ip ~ ':6443 check verify none\n    ' }}"
+      loop: "{{ range(0, tf_MASTER | length, 1) | list }}"
+      loop_control:
+        extended: true
+
+    - name: Configure configuration for haproxy
+      blockinfile:
+        path: '/etc/haproxy/haproxy.cfg'
+        block: |
+          # /etc/haproxy/haproxy.cfg
+          #---------------------------------------------------------------------
+          # Global settings
+          #---------------------------------------------------------------------
+          global
+              log stdout format raw local0
+              daemon
+
+          #---------------------------------------------------------------------
+          # common defaults that all the 'listen' and 'backend' sections will
+          # use if not designated in their block
+          #---------------------------------------------------------------------
+          defaults
+              mode                    http
+              log                     global
+              option                  httplog
+              option                  dontlognull
+              option http-server-close
+              option forwardfor       except 127.0.0.0/8
+              option                  redispatch
+              retries                 1
+              timeout http-request    10s
+              timeout queue           20s
+              timeout connect         5s
+              timeout client          35s
+              timeout server          35s
+              timeout http-keep-alive 10s
+              timeout check           10s
+
+          #---------------------------------------------------------------------
+          # apiserver frontend which proxys to the control plane nodes
+          #---------------------------------------------------------------------
+          frontend apiserver
+              bind {{ tf_VIP_IP }}:6443
+              mode tcp
+              option tcplog
+              default_backend apiserverbackend
+          #---------------------------------------------------------------------
+          # round robin balancing for apiserver
+          #---------------------------------------------------------------------
+          backend apiserverbackend
+              option httpchk
+              http-check connect ssl
+              http-check send meth GET uri /healthz
+              http-check expect status 200
+              mode tcp
+              balance     roundrobin
+
+              {{ backend_master }}
+              
+
+    - name: restart haproxy service
+      shell: sudo service haproxy restart
+    - name: restart keepalived service
+      shell: sudo service keepalived restart

@@ -1,0 +1,31 @@
+tf_ETCD:
+%{for index, group in etcd_ip ~}
+  ${index+1}:
+    hostname: ${etcd_dns[index]}
+    ip:       ${etcd_ip[index]}
+    user:     ${etcd_user[index]}
+%{endfor ~}
+tf_EDGE:
+%{for index, group in edge_ip ~}
+  ${index+1}:
+    hostname: ${edge_dns[index]}
+    ip:       ${edge_ip[index]}
+    user:     ${edge_user[index]}
+%{endfor ~}
+tf_MASTER:
+%{for index, group in master_ip ~}
+  ${index+1}:
+    hostname: ${master_dns[index]}
+    ip:       ${master_ip[index]}
+    user:     ${master_user[index]}
+%{endfor ~}
+tf_WORKER:
+%{for index, group in worker_ip ~}
+  ${index+1}:
+    hostname: ${worker_dns[index]}
+    ip:       ${worker_ip[index]}
+    user:     ${worker_user[index]}
+%{endfor ~}
+
+tf_ansible_user  :  ${tf_ansible_user}
+tf_VIP_IP:    ${tf_VIP_IP}

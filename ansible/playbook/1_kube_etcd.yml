@@ -1,0 +1,95 @@
+- hosts: etcd
+  vars_files:
+    - /etc/ansible/vars/tf_ansible_vars_file.yml
+    - /etc/ansible/vars/an_ansible_vars_file.yml
+  become: yes
+  tasks:
+    - name: Check mandatory variables imported from Terraform
+      assert:
+        that:
+          - tf_ETCD is defined
+        fail_msg: "tf_* variable usually defined in '/etc/ansible/vars/tf_ansible_vars_file.yml' is missing"
+
+    - name: Check mandatory variables imported from dependancy var
+      assert:
+        that:
+          - an_etcd_ver
+        fail_msg: "an_* variable usually defined in '/etc/ansible/vars/an_ansible_vars_file.yml' is missing"
+
+    - name: Create PKI directories
+      file:
+        path: /etc/etcd/pki
+        state: directory
+        mode: '0755'
+        recurse: yes
+
+    - name: Move pkis to bash
+      shell: sudo mv ca.pem etcd.pem etcd-key.pem /etc/etcd/pki/
+
+    - name: Download etcd tarball
+      get_url:
+        url: https://github.com/etcd-io/etcd/releases/download/v{{ an_etcd_ver }}/etcd-v{{ an_etcd_ver }}-linux-amd64.tar.gz
+        dest: '~/etcd-v{{ an_etcd_ver }}-linux-amd64.tar.gz'
+        mode: "0644"
+        force: true
+
+    - name: unpack etcd tarball 
+      shell: tar zxf ~/etcd-v{{ an_etcd_ver }}-linux-amd64.tar.gz
+
+    - name: Move etcd executable to bash 
+      shell: sudo mv etcd-v{{ an_etcd_ver }}-linux-amd64/etcd* /usr/local/bin/
+
+    - name: Create an empty file for etcd config
+      copy:
+        content: ""
+        dest: '~/etcd.service'
+        force: no
+
+    - name: Search every hosts of the etcd cluster and prepare values to initial-cluster string
+      set_fact:
+        etcd: "{{ etcd | d('') + tf_ETCD[ansible_loop.index].hostname ~ '=https://' ~ tf_ETCD[ansible_loop.index].ip ~ ':2380,' }}"
+      loop: "{{ range(0, tf_ETCD | length, 1) | list }}"
+      loop_control:
+        extended: true
+
+
+    - name: Configure service for etcd
+      blockinfile:
+        path: '~/etcd.service'
+        block: |
+          [Unit]
+          Description=etcd
+
+          [Service]
+          Type=notify
+          ExecStart=/usr/local/bin/etcd \
+            --name {{ ansible_hostname }} \
+            --cert-file=/etc/etcd/pki/etcd.pem \
+            --key-file=/etc/etcd/pki/etcd-key.pem \
+            --peer-cert-file=/etc/etcd/pki/etcd.pem \
+            --peer-key-file=/etc/etcd/pki/etcd-key.pem \
+            --trusted-ca-file=/etc/etcd/pki/ca.pem \
+            --peer-trusted-ca-file=/etc/etcd/pki/ca.pem \
+            --peer-client-cert-auth \
+            --client-cert-auth \
+            --initial-advertise-peer-urls https://{{ ansible_eth0.ipv4.address }}:2380 \
+            --listen-peer-urls https://{{ ansible_eth0.ipv4.address }}:2380 \
+            --advertise-client-urls https://{{ ansible_eth0.ipv4.address }}:2379 \
+            --listen-client-urls https://{{ ansible_eth0.ipv4.address }}:2379,https://127.0.0.1:2379 \
+            --initial-cluster-token etcd-cluster-1 \
+            --initial-cluster {{ etcd[:-1] }} \
+            --initial-cluster-state new
+          Restart=on-failure
+          RestartSec=5
+
+          [Install]
+          WantedBy=multi-user.target
+
+    - name: Move etcd to systemd 
+      shell: sudo mv ~/etcd.service /etc/systemd/system/etcd.service
+    
+    - name: Reload daemon
+      shell: sudo systemctl daemon-reload
+
+    - name: Enable the etcd service and start service
+      shell: sudo systemctl enable --now etcd

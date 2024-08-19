@@ -1,0 +1,188 @@
+- hosts: master_init
+  vars_files:
+    - /etc/ansible/vars/tf_ansible_vars_file.yml
+    - /etc/ansible/vars/an_ansible_vars_file.yml
+  become: yes
+  tasks:
+    - name: Check mandatory variables imported from Terraform
+      assert:
+        that:
+          - tf_VIP_IP is defined
+          - tf_ETCD is defined
+        fail_msg: "tf_* variable usually defined in '/etc/ansible/vars/tf_ansible_vars_file.yml' is missing"
+    - name: Check mandatory variables imported from dependancy var
+      assert:
+        that:
+          - an_pod_subnet
+          - an_calico_ver
+        fail_msg: "an_* variable usually defined in '/etc/ansible/vars/an_ansible_vars_file.yml' is missing"
+    - name: Create etcd pki directory
+      file:
+        path: /etc/kubernetes/pki/etcd
+        state: directory
+        mode: '0755'
+        recurse: yes
+    - name: Move pkis into kubernetes
+      shell: sudo mv etcd-key.pem etcd.pem ca.pem /etc/kubernetes/pki/etcd/
+  
+    - name: Create an Empty file for Kubeadm configuring
+      copy:
+        content: ""
+        dest: /etc/kubernetes/kubeadm-config.yaml
+        force: no
+
+    - name: Search every hosts of the etcd cluster and prepare values to initial-cluster string
+      set_fact:
+        etcd_connect: "{{ etcd_connect | d('') + '- https://' ~ tf_ETCD[ansible_loop.index].ip ~ ':2379\n      ' }}"
+      loop: "{{ range(0, tf_ETCD | length, 1) | list }}"
+      loop_control:
+        extended: true
+
+    - name: Configure container runtime
+      blockinfile:
+        path: /etc/kubernetes/kubeadm-config.yaml
+        block: |
+          kind: ClusterConfiguration
+          apiVersion: kubeadm.k8s.io/v1beta3
+          controlPlaneEndpoint: "{{ tf_VIP_IP }}:6443"
+          networking:
+            podSubnet: "{{ an_pod_subnet }}"
+          etcd:
+            external:
+                endpoints:
+                {{ etcd_connect[:-6] }}
+                caFile: /etc/kubernetes/pki/etcd/ca.pem
+                certFile: /etc/kubernetes/pki/etcd/etcd.pem
+                keyFile: /etc/kubernetes/pki/etcd/etcd-key.pem
+          ---
+          apiVersion: kubeadm.k8s.io/v1beta3
+          kind: InitConfiguration
+          localAPIEndpoint:
+            advertiseAddress: "{{ tf_VIP_IP }}"
+          ---
+          kind: KubeletConfiguration
+          apiVersion: kubelet.config.k8s.io/v1beta1
+          runtimeRequestTimeout: "15m"
+          cgroupDriver: "systemd"
+          enforceNodeAllocatable:
+          - pods
+
+    - name: Initialize the cluster
+      command: sudo kubeadm init --config /etc/kubernetes/kubeadm-config.yaml --upload-certs
+      register: kubeadm_output
+      ignore_errors: yes
+
+    - name: Create .kube directory
+      become: no
+      become_user: "{{ ansible_user_id }}"
+      file:
+        path: $HOME/.kube
+        state: directory
+        mode: 0755
+
+    - name: Move admin.conf to User's kube config
+      become: no
+      become_user: "{{ ansible_user_id }}"
+      shell: sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config && sudo chown $(id -u):$(id -g) $HOME/.kube/config
+
+    - name: Create an empty file for the pod network
+      become: no
+      become_user: "{{ ansible_user_id }}"
+      copy:
+        content: ""
+        dest: ~/pod-net.yaml
+        force: no
+
+    - name: Configure pod network
+      become: no
+      become_user: "{{ ansible_user_id }}"
+      blockinfile:
+        path: ~/pod-net.yaml
+        block: |
+          # This section includes base Calico installation configuration.
+          # For more information, see: https://docs.tigera.io/calico/latest/reference/installation/api#operator.tigera.io/v1.Installation
+          apiVersion: operator.tigera.io/v1
+          kind: Installation
+          metadata:
+            name: default
+          spec:
+            # Configures Calico networking.
+            calicoNetwork:
+              ipPools:
+              - name: default-ipv4-ippool
+                blockSize: 26
+                cidr: {{ an_pod_subnet }}
+                encapsulation: VXLANCrossSubnet
+                natOutgoing: Enabled
+                nodeSelector: all()
+
+          ---
+
+          # This section configures the Calico API server.
+          # For more information, see: https://docs.tigera.io/calico/latest/reference/>
+          apiVersion: operator.tigera.io/v1
+          kind: APIServer
+          metadata:
+            name: default
+          spec: {}
+
+    - name: Install prerequises for Calico
+      become: no
+      become_user: "{{ ansible_user_id }}"
+      shell: kubectl create -f https://raw.githubusercontent.com/projectcalico/calico/v{{ an_calico_ver }}/manifests/tigera-operator.yaml >> pod_network_setup.log
+
+
+    - name: Install Pod Network
+      become: no
+      become_user: "{{ ansible_user_id }}"
+      shell: kubectl apply --validate=false -f ~/pod-net.yaml >> pod_network_setup.log
+
+    - name: Retrieve Join Command
+      become: no
+      become_user: "{{ ansible_user_id }}"
+      shell: kubeadm token create --print-join-command
+      register: join_command_raw
+
+    - name: Set Join Command
+      set_fact:
+        join_command: "{{ join_command_raw.stdout }}"
+
+    - name: Retrieve cert key Command
+      become: no
+      become_user: "{{ ansible_user_id }}"
+      shell: sudo kubeadm init phase upload-certs --upload-certs --config /etc/kubernetes/kubeadm-config.yaml
+      register: cert_key_raw
+      
+    - name: Set cert key Command
+      set_fact:
+        cert_key: "{{ cert_key_raw.stdout[-64:] }}"
+
+
+
+- hosts: master_dup
+  vars_files:
+    - /etc/ansible/vars/tf_ansible_vars_file.yml
+  become: yes
+  tasks:
+    - name: Check mandatory variables imported from Terraform
+      assert:
+        that:
+          - tf_VIP_IP is defined
+        fail_msg: "tf_* variable usually defined in '/opt/ansible/tf_ansible_vars_file.yml' is missing"
+    - name: Join worker to cluster
+      become: no
+      become_user: "{{ ansible_user_id }}"
+      shell: "sudo {{ hostvars[groups['master_init'][0]].join_command }} --apiserver-advertise-address={{ tf_VIP_IP }} --control-plane --certificate-key {{ hostvars[groups['master_init'][0]].cert_key }}>> node_joined.log"
+
+    - name: Create .kube directory
+      become: no
+      become_user: "{{ ansible_user_id }}"
+      file:
+        path: $HOME/.kube
+        state: directory
+        mode: 0755
+
+    - name: Move admin.conf to User's kube config
+      become: no
+      become_user: "{{ ansible_user_id }}"
+      shell: sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config && sudo chown $(id -u):$(id -g) $HOME/.kube/config

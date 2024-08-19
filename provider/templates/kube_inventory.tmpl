@@ -1,0 +1,27 @@
+[edge]
+%{for index, group in edge_ip ~}
+${edge_ip[index]} ansible_user=${edge_user[index]}
+%{endfor ~}
+
+[master]
+%{for index, group in master_ip ~}
+${master_ip[index]} ansible_user=${master_user[index]}
+%{endfor ~}
+
+[master_dup]
+%{for index, group in no_init_master_ip ~}
+${no_init_master_ip[index]} ansible_user=${no_init_master_user[index]}
+%{endfor ~}
+
+[master_init]
+${master_ip[0]} ansible_user=${master_user[0]}
+
+[etcd]
+%{for index, group in etcd_ip ~}
+${etcd_ip[index]} ansible_user=${etcd_user[index]}
+%{endfor ~}
+
+[workers]
+%{for index, group in worker_ip ~}
+${worker_ip[index]} ansible_user=${worker_user[index]}
+%{endfor ~}
