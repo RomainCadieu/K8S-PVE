@@ -131,6 +131,9 @@
       become_user: "{{ ansible_user_id }}"
       shell: kubectl create -f https://raw.githubusercontent.com/projectcalico/calico/v{{ an_calico_ver }}/manifests/tigera-operator.yaml >> pod_network_setup.log
 
+    - name: Sleep for 10 second to check if deployment is completed but it should be a check with this command "kubectl rollout status deployment/tigera-operator --namespace tigera-operator" returning 'deployment "tigera-operator" successfully rolled out'
+      wait_for:
+        timeout: 10
 
     - name: Install Pod Network
       become: no
@@ -169,7 +172,7 @@
         that:
           - tf_VIP_IP is defined
         fail_msg: "tf_* variable usually defined in '/opt/ansible/tf_ansible_vars_file.yml' is missing"
-    - name: Join worker to cluster
+    - name: Join control nodes to cluster
       become: no
       become_user: "{{ ansible_user_id }}"
       shell: "sudo {{ hostvars[groups['master_init'][0]].join_command }} --apiserver-advertise-address={{ tf_VIP_IP }} --control-plane --certificate-key {{ hostvars[groups['master_init'][0]].cert_key }}>> node_joined.log"

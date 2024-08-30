@@ -12,7 +12,13 @@ output "template_debian_public_key" {
   value = tls_private_key.template_debian_key.public_key_openssh
 }
 
-output "template_ID" {
-  value = proxmox_virtual_environment_vm.template_debian_vm[0].vm_id
-}
 
+
+
+
+output "Template_Id" {
+  value = "${format("%2s%02s",var.Template.Id_prefix, 01)}"
+}
+output "VyOS_template_ID" {
+  value = local.VyOS_template_ID
+}

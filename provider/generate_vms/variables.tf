@@ -26,23 +26,16 @@ variable "vlanID" {
   default = "100" 
 }
 variable "WAN_IP_prefix" {
-  default = ""
+    default = ""
 }
 variable "LAN_IP_prefix" {
-  default = ""
+    default = ""
 }
-variable "Template_Id" {
-  default = 9101
-}
-variable "VyOS_template_ID" {
-  default = 9102
-}
-variable "WAN_IP_temp_prefix" {
-  default = "192.168.1."
-}
-variable "WAN_IP_temp_suffix" {
-  default = 130
-}
+variable "Template_Id" {}
+variable "VyOS_template_ID" {}
+variable "WAN_IP_temp_prefix" {}
+variable "WAN_IP_temp_suffix" {}
+
 variable "Proxmox" {
   type = object({
     Endpoint        = string
@@ -195,6 +188,7 @@ variable "Admin_VPN" {
     Port            = 51820
   }
 }
+
 
 #Software version
 variable "VyOS_version" {

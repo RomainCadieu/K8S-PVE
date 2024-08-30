@@ -1,0 +1,39 @@
+- hosts: master_init
+  vars_files:
+    - /etc/ansible/vars/tf_ansible_vars_file.yml
+  become: yes
+  tasks:
+    - name: Retrieve Join Command
+      become: no
+      become_user: "{{ ansible_user_id }}"
+      shell: kubeadm token create --print-join-command
+      register: join_command_raw
+
+    - name: Set Join Command
+      set_fact:
+        join_command: "{{ join_command_raw.stdout }}"
+
+- hosts: etcd
+  vars_files:
+    - /etc/ansible/vars/tf_ansible_vars_file.yml
+  become: yes
+  tasks:
+    - name: Check mandatory variables imported from Terraform
+      assert:
+        that:
+          - tf_VIP_IP is defined
+        fail_msg: "tf_* variable usually defined in '/opt/ansible/tf_ansible_vars_file.yml' is missing"
+    - name: Join control nodes to cluster
+      become: no
+      become_user: "{{ ansible_user_id }}"
+      shell: "sudo {{ hostvars[groups['master_init'][0]].join_command }}>> node_joined.log"
+
+- hosts: workers
+  vars_files:
+    - /etc/ansible/vars/tf_ansible_vars_file.yml
+  become: yes
+  tasks:
+    - name: Join control nodes to cluster
+      become: no
+      become_user: "{{ ansible_user_id }}"
+      shell: "sudo {{ hostvars[groups['master_init'][0]].join_command }}>> node_joined.log"

@@ -1,178 +1,91 @@
-//Proxmox Settings
-variable "PROXMOX_VE_ENDPOINT" {
-    default = "https://10.0.0.2:8006"
-}
-
-variable "PROXMOX_VE_IP" {
-    default = "10.0.0.2"
-}
-
-variable "PROXMOX_VE_USERNAME" {
-    default = "root@pam"
-}
-
-variable "PROXMOX_VE_PASSWORD" {
-    default = "the-password-set-during-installation-of-proxmox-ve"
-}
-
-variable "PROXMOX_VE_SSH_USERNAME" {
-    default = "root"
-}
-
-variable "PROXMOX_VE_SSH_PASSWORD" {
-    default = "the-password-set-during-installation-of-proxmox-ve"
-}
-
-variable "PROXMOX_VE_DEFAULT_NODE" {
-    default = "pve"
-}
-
-variable "PROXMOX_VE_DEFAULT_DATASTORE" {
-    default = "local-lvm"
-}
-
-variable "TEMPLATE_IP" {
-    default = "dhcp"
-}
-variable "TEMPLATE_MASK" {
-    default = ""
-}
-variable "TEMPLATE_GW" {
-    default = ""
-}
-variable "TEMPLATE_ID_PREFIX" {
-    default = 92
-}
-variable "TEMPLATE_SSH" {
-    default = ""
-    # Casualy used with 'tls_private_key.template_debian_key.public_key_openssh'
-}
-variable "TEMPLATE_SSH_LOCAL_FILE" {
-    default = ""
-    # Casualy used with 'C:/user/user/.ssh/pub_key'
-}
 variable "DEFAULT_USERNAME" {
     default = "ubuntu"
 }
-variable "EDGE_NUMBER_OF_VM" {
-    default = 3
-}
-variable "EDGE_IP_PREFIX" {
-    default = "dhcp"
-}
-variable "EDGE_IP_PREFIX_24" {
+
+variable "WAN_GW" {
+  type = string
+  validation {
+    condition     = can(regex("^(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$",var.WAN_GW))
+    error_message = "Must be a valid IPv4 block address."
+  }  
     default = ""
-    #Not used in case of DHCP
-}
-variable "EDGE_GW" {
-    default = ""
-}
-variable "EDGE_MASK" {
-    default = ""
-}
-variable "EDGE_ID_PREFIX" {
-    default = 92
 }
 
-variable "ETCD_NUMBER_OF_VM" {
-    default = 3
+variable "Proxmox" {
+  type = object({
+    Endpoint        = string
+    Ip              = string
+    Username        = string
+    Password        = string
+    SSH_username    = string
+    SSH_password    = string
+    Node            = string
+    Datastore       = string
+  })
+  default = {
+    Endpoint        = "https://10.0.0.2:8006"
+    Ip              = "10.0.0.2"
+    Username        = "root@pam"
+    Password        = "the-password-set-during-installation-of-proxmox-ve"
+    SSH_username    = "root"
+    SSH_password    = "the-password-set-during-installation-of-proxmox-ve"
+    Node            = "pve"
+    Datastore       = "local-lvm"
+  }
 }
-variable "ETCD_IP_PREFIX" {
-    default = "dhcp"
+variable "Template" {
+  type = object({
+    Ip_prefix       = string
+    Ip_suffix       = number
+    Mask            = string
+    Id_prefix       = number
+    SSH_key         = string # Casualy used with 'tls_private_key.template_debian_key.public_key_openssh'
+    SSH_local_file  = string # Casualy used with 'C:/user/user/.ssh/pub_key'
+  })
+  default = {
+    Ip_prefix       = "dhcp"
+    Ip_suffix       = 0
+    Mask            = ""
+    Id_prefix       = 91
+    SSH_key         = ""
+    SSH_local_file  = ""
+  }
 }
-variable "ETCD_IP_PREFIX_24" {
-    default = ""
-    #Not used in case of DHCP
+variable "Ansible" {
+  type = object({
+    Ip              = string
+    Mask            = string
+    Id              = number
+  })
+  default = {
+    Ip              = "dhcp"
+    Mask            = ""
+    Id              = 8101
+  }
 }
-variable "ETCD_GW" {
-    default = ""
-}
-variable "ETCD_MASK" {
-    default = ""
-}
-variable "ETCD_ID_PREFIX" {
-    default = 93
-}
-
-variable "MASTER_NUMBER_OF_VM" {
-    default = 3
-}
-variable "MASTER_IP_PREFIX" {
-    default = "dhcp"
-}
-variable "MASTER_IP_PREFIX_24" {
-    default = ""
-    #Not used in case of DHCP
-}
-variable "MASTER_GW" {
-    default = ""
-}
-variable "MASTER_MASK" {
-    default = ""
-}
-variable "MASTER_ID_PREFIX" {
-    default = 94
-}
-
-variable "WORKER_NUMBER_OF_VM" {
-    default = 3
-}
-variable "WORKER_IP_PREFIX" {
-    default = "dhcp"
-}
-variable "WORKER_IP_PREFIX_24" {
-    default = ""
-    #Not used in case of DHCP
-}
-variable "WORKER_GW" {
-    default = ""
-}
-variable "WORKER_MASK" {
-    default = ""
-}
-variable "WORKER_ID_PREFIX" {
-    default = 95
-}
-
-
-variable "ANSIBLE_IP" {
-    default = "dhcp"
-}
-variable "ANSIBLE_GW" {
-    default = ""
-}
-variable "ANSIBLE_MASK" {
-    default = ""
-}
-variable "ANSIBLE_ID" {
-    default = 8101
-}
-
-
-
 
 #Software version
 variable "VyOS_version" {
   type = object({
-    Major       = string
-    Branch      = string
-    Minor       = number
+    Major           = string
+    Branch          = string
+    Minor           = number
   })
   default = {
-    Major       = "1.5"
-    Branch      = "rolling"
-    Minor       = "202408090021"
+    Major           = "1.5"
+    Branch          = "rolling"
+    Minor           = "202408090021"
   }
 }
 variable "Debian_version" {
   type = object({
-    MajorID     = number
-    MajorFQDN   = string
-    MinorID     = string
+    MajorID         = number
+    MajorFQDN       = string
+    MinorID         = string
   })
   default = {
-    MajorID     = 12
-    MajorFQDN   = "bookworm"
-    MinorID     = "20240717-1811"
+    MajorID         = 12
+    MajorFQDN       = "bookworm"
+    MinorID         = "20240717-1811"
   }
 }
